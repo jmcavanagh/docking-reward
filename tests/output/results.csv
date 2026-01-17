@@ -1,0 +1,7 @@
+smiles,score
+c1cncnc1O,3.6738
+c1cncn,-10.0000
+CNC(=O)CN1[C@H](CC(=O)NC2(C(=O)Nc3ccc(F)cc3)CC2)CN(C(=O)c2cc(OC)c(OC)cc2N)C[C@H]1c1ccccc1,3.6174
+CNC(=O)CCOCCC(=O)N1CCC(C2CCN(C(=O)c3ccc4c(c3)c(C(=O)N[C@H]3COc5ccc(Cl)cc53)nn4C)CC2)CC1,4.3251
+n1c(c2c(nc1c1cc(cnc1)OC)cc(c(c2)OC)OC)N[C@@H](CC(=O)NC)c1ccc(cc1)C#N,2.9228
+CN(c1c2ccccc2nc(c2cnccc2)n1)CCCC1=N[NH2+]C(=C1C#N)N,2.8118

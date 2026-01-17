@@ -1,0 +1,7 @@
+smiles,total_score,error,pgk2_vina_score,pgk2_docking_contribution,pgk2_interaction_score,pgk2_interaction_pose,off_target_vina_score,off_target_docking_contribution,off_target_interaction_score,off_target_interaction_pose,qed_score,qed_contribution
+c1cncnc1O,3.6738,,-4.39,4.3930,2.0000,0,-4.03,-3.2200,0.0000,0,0.5008,0.5008
+c1cncn,-10.0000,Invalid SMILES,,,,,,,,,,
+CNC(=O)CN1[C@H](CC(=O)NC2(C(=O)Nc3ccc(F)cc3)CC2)CN(C(=O)c2cc(OC)c(OC)cc2N)C[C@H]1c1ccccc1,3.6174,,-8.88,8.8790,1.0000,1,-8.12,-6.4936,0.0000,0,0.2320,0.2320
+CNC(=O)CCOCCC(=O)N1CCC(C2CCN(C(=O)c3ccc4c(c3)c(C(=O)N[C@H]3COc5ccc(Cl)cc53)nn4C)CC2)CC1,4.3251,,-9.39,9.3920,1.0000,0,-7.97,-6.3792,0.0000,0,0.3123,0.3123
+n1c(c2c(nc1c1cc(cnc1)OC)cc(c(c2)OC)OC)N[C@@H](CC(=O)NC)c1ccc(cc1)C#N,2.9228,,-9.00,8.9980,1.0000,0,-9.29,-7.4280,0.0000,0,0.3528,0.3528
+CN(c1c2ccccc2nc(c2cnccc2)n1)CCCC1=N[NH2+]C(=C1C#N)N,2.8118,,-9.05,9.0500,0.0000,0,-8.57,-6.8592,0.0000,0,0.6210,0.6210

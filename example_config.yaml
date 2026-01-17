@@ -1,0 +1,201 @@
+# =============================================================================
+# Docking Reward Calculator Configuration
+# =============================================================================
+# This file configures how molecules are scored based on:
+#   1. Docking affinity to protein targets (via AutoDock Vina)
+#   2. Specific protein-ligand interactions (H-bonds, hydrophobic, etc.)
+#   3. Drug-likeness metrics (QED, custom scorers)
+#
+# The final score is: sum of all weighted contributions
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Global Vina Settings
+# -----------------------------------------------------------------------------
+# These settings apply to all docking runs unless overridden per-target.
+#
+vina:
+  # Exhaustiveness of the global search.
+  # Higher values = more thorough search but slower.
+  # Recommended: 8 for quick screening, 32 for production.
+  exhaustiveness: 8
+
+  # Number of binding poses to generate per ligand.
+  # More poses = better chance of finding good interactions, but slower.
+  n_poses: 9
+
+  # Maximum energy difference (kcal/mol) between best and worst returned pose.
+  # Poses worse than (best + energy_range) are discarded.
+  energy_range: 3.0
+
+  # Random seed for reproducibility (optional).
+  # Uncomment to get reproducible docking results.
+  # seed: 42
+
+# -----------------------------------------------------------------------------
+# Drug-likeness Scoring
+# -----------------------------------------------------------------------------
+# Scores molecular properties independent of docking.
+# Each scorer adds: weight * score to the final reward.
+#
+druglikeness:
+  # QED: Quantitative Estimate of Drug-likeness
+  # Returns a value between 0 and 1 (higher = more drug-like).
+  # Based on molecular properties like MW, logP, HBD, HBA, PSA, ROTB, AROM, ALERTS.
+  qed:
+    weight: 1.0
+
+  # Custom scorers (optional)
+  # You can define your own scoring functions in Python files.
+  # Each file should have a function: def score(mol: rdkit.Chem.Mol) -> float
+  #
+  # custom:
+  #   - path: "/path/to/my_scorer.py"
+  #     function: "score"  # Name of the function in the file
+  #     weight: 0.5
+  #
+  # Example custom scorer file (my_scorer.py):
+  #   from rdkit import Chem
+  #   from rdkit.Chem import Descriptors
+  #
+  #   def score(mol: Chem.Mol) -> float:
+  #       """Prefer molecules around 400 Da."""
+  #       mw = Descriptors.MolWt(mol)
+  #       return max(0, 1.0 - abs(mw - 400) / 400)
+
+# -----------------------------------------------------------------------------
+# Docking Targets
+# -----------------------------------------------------------------------------
+# Define one or more protein targets for docking.
+# Each target contributes to the final score based on its weight.
+#
+# IMPORTANT: The docking box is specified as:
+#   - center: [x, y, z] coordinates in Angstroms (center of the binding site)
+#   - size: [x, y, z] dimensions in Angstroms (should encompass binding site + buffer)
+#
+# Tip: Use visualization software (PyMOL, Chimera) to determine box coordinates.
+# Typical box size: 15-25 Angstroms per dimension.
+#
+targets:
+  # -------------------------
+  # Example: Primary target
+  # -------------------------
+  # This is the main target we want strong binding to.
+  # Positive weight means better binding = higher reward.
+  #
+  - name: "pgk2"
+    # Path to the protein structure file (PDB format).
+    # The protein should be prepared:
+    #   - Protonated at pH 7.4 (use PDB2PQR, Reduce, or PyMOL)
+    #   - Water molecules removed (unless you want them in the binding site)
+    #   - Missing residues modeled (if near binding site)
+    #
+    # WARNING: If the PDB is not protonated, you will see a warning.
+    pdb_path: "pgk2_299ns_lig47.pdb"
+
+    # Docking box center coordinates [x, y, z] in Angstroms.
+    # This should be the center of your binding site.
+    # You can find this by:
+    #   1. Loading the protein in PyMOL
+    #   2. Selecting binding site residues
+    #   3. Running: print(cmd.centerofmass("sele"))
+    center: [89.584, 72.913, 42.556]
+
+    # Docking box size [x, y, z] in Angstroms.
+    # Should be large enough to encompass the entire binding site.
+    # Too small: ligand won't fit properly
+    # Too large: slower docking, less precise
+    size: [20.0, 20.0, 20.0]
+
+    # Scoring weight for this target.
+    #
+    # How it works:
+    #   - Vina returns negative scores (e.g., -8.5 kcal/mol for good binding)
+    #   - We NEGATE the score internally (so -8.5 becomes +8.5)
+    #   - Then multiply by weight
+    #
+    # Examples:
+    #   weight: 1.0  -> Vina score -8.5 contributes +8.5 to final score
+    #   weight: 0.5  -> Vina score -8.5 contributes +4.25 to final score
+    #   weight: -1.0 -> Vina score -8.5 contributes -8.5 to final score (anti-target!)
+    weight: 1.0
+
+    # Per-target Vina settings (optional, overrides global settings)
+    # exhaustiveness: 16
+    # n_poses: 5
+
+    # -------------------------
+    # Interaction-based scoring (optional)
+    # -------------------------
+    # Award or penalize specific interactions with residues.
+    # Score contribution: weight * count (number of interactions)
+    #
+    # Energy threshold for interaction scoring (kcal/mol):
+    # All poses within this threshold of the best pose are evaluated.
+    # The pose with the MOST interactions (highest score) is used.
+    # Example: if best pose is -9.0 kcal/mol and threshold is 1.0,
+    #          poses with energy <= -8.0 kcal/mol are considered.
+    interaction_energy_threshold: 1.0
+    #
+    # Interaction types:
+    #   - hydrogen_bond: H-bond donor or acceptor interaction
+    #   - hydrophobic: Hydrophobic contact
+    #   - salt_bridge: Ionic/salt bridge interaction
+    #   - pi_stacking: Pi-pi stacking interaction
+    #   - any: Count of all interaction types combined
+    #
+    # Residue format: "RES###" where RES is 3-letter code, ### is residue number
+    # Examples: "ASP123", "LYS45", "TYR200"
+    #
+    interactions:
+      # Reward hydrogen bonds with a key catalytic residue
+      - residue: "TYR245"
+        type: "hydrogen_bond"
+        weight: 1.0
+        
+  # -------------------------
+  # Example: Anti-target (selectivity)
+  # -------------------------
+  # This is a protein we want to AVOID binding to.
+  # Negative weight means better binding = LOWER reward.
+  # Use this for selectivity optimization.
+  #
+  - name: "off_target"
+    pdb_path: "pgk1_fixed_protein.pdb"
+
+    # Box centered on the off-target's binding site
+    center: [23.823, 17.933, 36.860]
+    size: [20.0, 20.0, 20.0]
+
+    # NEGATIVE weight: penalize good binding
+    # If a molecule binds well (Vina score -7.0):
+    #   Score contribution = -0.5 * (-(-7.0)) = -0.5 * 7.0 = -3.5
+    # This subtracts from the total score, favoring selective molecules.
+    weight: -0.8
+
+# =============================================================================
+# Full Score Formula
+# =============================================================================
+# For each valid SMILES that docks successfully:
+#
+#   total_score = 0
+#
+#   # Docking contributions (for each target)
+#   for target in targets:
+#       vina_score = dock(ligand, target)  # e.g., -8.5 kcal/mol
+#       total_score += target.weight * (-vina_score)
+#       # Example: 1.0 * (-(-8.5)) = +8.5
+#
+#       # Interaction contributions
+#       for interaction_config in target.interactions:
+#           count = count_interactions(pose, residue, type)
+#           total_score += interaction_config.weight * count
+#           # Example: 2 H-bonds with ASP123, weight 0.5 -> +1.0
+#
+#   # Drug-likeness contributions
+#   total_score += qed.weight * QED(mol)  # e.g., 1.0 * 0.8 = +0.8
+#
+#   return total_score
+#
+# Invalid SMILES or failed docking returns: -10.0
+# =============================================================================

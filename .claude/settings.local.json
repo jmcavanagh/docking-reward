@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv pip install:*)",
+      "Bash(pip install:*)",
+      "Bash(source /Users/joe/miniconda3/etc/profile.d/conda.sh:*)",
+      "Bash(conda activate:*)",
+      "Bash(python3:*)"
+    ]
+  }
+}

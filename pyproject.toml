@@ -1,0 +1,72 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "docking-reward"
+version = "0.1.0"
+description = "Score molecules based on docking affinity, protein-ligand interactions, and drug-likeness"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
+]
+keywords = ["docking", "drug-discovery", "reinforcement-learning", "vina", "cheminformatics"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+dependencies = [
+    "rdkit>=2023.9.1",
+    "meeko>=0.5.0",
+    "vina>=1.2.5",
+    "plip>=2.3.0",
+    "openbabel>=3.1.0",
+    "pyyaml>=6.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+dask = [
+    "dask[distributed]>=2024.1.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+all = [
+    "docking-reward[dask,dev]",
+]
+
+[project.scripts]
+docking-reward = "docking_reward.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/yourusername/docking-reward"
+Documentation = "https://github.com/yourusername/docking-reward#readme"
+Repository = "https://github.com/yourusername/docking-reward"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/docking_reward"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]
