@@ -26,13 +26,13 @@ classifiers = [
 ]
 
 dependencies = [
-    "rdkit>=2023.9.1",
     "meeko>=0.5.0",
-    "vina>=1.2.5",
-    "plip>=2.3.0",
-    "openbabel>=3.1.0",
     "pyyaml>=6.0",
     "numpy>=1.24.0",
+    # The following packages have native dependencies and MUST be installed via conda:
+    #   conda install -c conda-forge vina openbabel plip rdkit
+    # They are NOT listed here because pip cannot install them properly.
+    # See README.md for installation instructions.
 ]
 
 [project.optional-dependencies]
