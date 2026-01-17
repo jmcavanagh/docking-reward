@@ -95,23 +95,18 @@ def setup_logging(
         """Filter out chemistry library warnings from console."""
 
         def filter(self, record: logging.LogRecord) -> bool:
-            # Allow through if this is going to file
-            if any(h.level == logging.DEBUG for h in record.handlers if hasattr(h, 'level')):
-                return True
-
-            # Filter out common noisy messages
+            # Filter out common noisy messages from chemistry libraries
             noisy_patterns = [
-                "Warning: molecule",
-                "WARNING: molecule",
-                "Sanitization",
-                "Can't kekulize",
-                "Explicit valence",
-                "SMILES Parse Error",
+                "warning: molecule",
+                "sanitization",
+                "can't kekulize",
+                "explicit valence",
+                "smiles parse error",
                 "rdkit",
             ]
-            msg = str(record.msg)
+            msg = str(record.msg).lower()
             for pattern in noisy_patterns:
-                if pattern.lower() in msg.lower():
+                if pattern in msg:
                     return False
             return True
 
