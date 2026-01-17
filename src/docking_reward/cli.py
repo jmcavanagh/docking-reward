@@ -6,16 +6,7 @@ import sys
 from pathlib import Path
 
 from .calculator import RewardCalculator
-
-
-def setup_logging(verbose: bool) -> None:
-    """Configure logging based on verbosity."""
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+from .logging_config import setup_logging
 
 
 def main() -> int:
@@ -31,20 +22,34 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Basic usage
+  # Basic usage (CPU Vina backend, set in config.yaml)
   docking-reward -i molecules.txt -o ./results -c config.yaml
 
-  # With parallel processing
-  docking-reward -i molecules.txt -o ./results -c config.yaml -w 16
+  # With parallel processing (64 CPU workers)
+  docking-reward -i molecules.txt -o ./results -c config.yaml -w 64
 
-  # Using Dask backend
+  # Using Dask for distributed computing
   docking-reward -i molecules.txt -o ./results -c config.yaml -w 64 -b dask
+
+Docking backends (set in config.yaml):
+  - vina: CPU-based AutoDock Vina (parallelized per molecule)
+  - unidock: GPU-based Uni-Dock (batched, much faster with GPU)
+
+Scoring functions (set in config.yaml):
+  - vina: Standard Vina scoring
+  - vinardo: Faster Vinardo scoring
+  - ad4: AutoDock4 scoring
 
 Output:
   Creates output_dir with:
     - results.csv: Two columns (smiles, score)
+    - breakdown.csv: Detailed score breakdown
+    - docking.log: Detailed log with all warnings (RDKit, Vina, etc.)
     - poses/: Directory with SDF files for each valid molecule
     - tmp/: Intermediate PDBQT files (kept for debugging)
+
+  Console shows clean progress bars and summary stats.
+  All verbose warnings from RDKit/Vina go to docking.log.
         """,
     )
 
@@ -77,22 +82,46 @@ Output:
     )
 
     parser.add_argument(
-        "-b", "--backend",
+        "-b", "--parallel-backend",
         choices=["multiprocessing", "dask"],
         default="multiprocessing",
-        help="Parallelization backend (default: multiprocessing)",
+        help="CPU parallelization backend (default: multiprocessing). "
+             "Note: Docking backend (vina/unidock) is set in config file.",
     )
 
     parser.add_argument(
         "-v", "--verbose",
         action="store_true",
-        help="Enable verbose logging",
+        help="Show debug messages on console",
+    )
+
+    parser.add_argument(
+        "-q", "--quiet",
+        action="store_true",
+        help="Suppress console output (only show errors)",
+    )
+
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        default=None,
+        help="Path for detailed log file (default: OUTPUT_DIR/docking.log). "
+             "All RDKit/Vina warnings go here instead of console.",
     )
 
     args = parser.parse_args()
 
-    # Set up logging
-    setup_logging(args.verbose)
+    # Set log file path (default to output_dir/docking.log)
+    log_file = args.log_file
+    if log_file is None:
+        log_file = args.output_dir / "docking.log"
+
+    # Set up logging with clean console output and detailed log file
+    setup_logging(
+        log_file=log_file,
+        verbose=args.verbose,
+        quiet=args.quiet,
+    )
     logger = logging.getLogger(__name__)
 
     # Validate inputs
@@ -113,7 +142,7 @@ Output:
         calc = RewardCalculator(
             config_path=args.config_file,
             n_workers=args.workers,
-            backend=args.backend,
+            parallel_backend=args.parallel_backend,
             temp_dir=temp_dir,
         )
 

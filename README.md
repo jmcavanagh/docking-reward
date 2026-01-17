@@ -2,6 +2,13 @@
 
 Score molecules based on docking affinity, protein-ligand interactions, and drug-likeness metrics. Designed for high-throughput use in reinforcement learning pipelines.
 
+**Features:**
+- Two docking backends: CPU (Vina) and GPU (Uni-Dock)
+- Multiple scoring functions: vina, vinardo, ad4
+- Interaction-based scoring (H-bonds, hydrophobic, salt bridges, pi-stacking)
+- Drug-likeness scoring (QED + custom scorers)
+- Parallel processing with multiprocessing or Dask
+
 ## Installation
 
 This package requires several tools with native dependencies (AutoDock Vina, OpenBabel, PLIP). **Conda is required** for installation.
@@ -21,6 +28,20 @@ pip install -e .
 pip install -e ".[dask]"
 ```
 
+### GPU Support (Uni-Dock)
+
+For GPU-accelerated docking (100-1000x faster), install Uni-Dock:
+
+```bash
+# Install Uni-Dock
+conda install -c conda-forge unidock
+
+# Or via pip
+pip install unidock
+```
+
+Then set `backend: unidock` in your config file.
+
 ### Verifying Installation
 
 ```bash
@@ -29,6 +50,9 @@ python -c "from vina import Vina; print('Vina OK')"
 
 # Check that OpenBabel is available
 obabel --version
+
+# Check Uni-Dock (optional, for GPU)
+which unidock
 
 # Check that the package is installed
 docking-reward --help
@@ -39,12 +63,12 @@ docking-reward --help
 ### Command Line
 
 ```bash
+# Basic usage (uses docking backend from config)
 docking-reward \
   --input-smiles molecules.txt \
   --output-dir ./results \
   --config-file config.yaml \
-  --workers 16 \
-  --backend multiprocessing
+  --workers 64
 ```
 
 ### Python API
@@ -52,8 +76,8 @@ docking-reward \
 ```python
 from docking_reward import RewardCalculator
 
-# Initialize calculator
-calc = RewardCalculator("config.yaml", n_workers=8)
+# Initialize calculator (docking backend comes from config)
+calc = RewardCalculator("config.yaml", n_workers=64)
 
 # Score a list of SMILES
 scores = calc.score(["CCO", "c1ccccc1", "CC(=O)Oc1ccccc1C(=O)O"])
@@ -66,13 +90,28 @@ calc.score_file("molecules.txt", output_dir="./results")
 
 See `example_config.yaml` for a fully commented configuration file. Key sections:
 
-### Vina Settings
+### Docking Settings
 ```yaml
-vina:
+docking:
+  # Backend: "vina" (CPU) or "unidock" (GPU)
+  backend: unidock
+
+  # Scoring function: "vina", "vinardo", or "ad4"
+  scoring_function: vina
+
   exhaustiveness: 8  # Higher = more thorough but slower
   n_poses: 9         # Number of poses to generate
   energy_range: 3.0  # Max energy difference from best pose
 ```
+
+**Docking backends:**
+- `vina`: CPU-based AutoDock Vina. Parallelized per-molecule using `--workers`.
+- `unidock`: GPU-based Uni-Dock. Batches all ligands and docks on GPU. **100-1000x faster** for large batches.
+
+**Scoring functions:**
+- `vina`: Standard Vina scoring (most validated)
+- `vinardo`: Faster Vinardo scoring (similar accuracy)
+- `ad4`: AutoDock4 scoring function
 
 ### Drug-likeness
 ```yaml
@@ -112,22 +151,37 @@ total_score = Σ(target.weight × -vina_score)           # Negated so positive =
 
 Invalid SMILES or failed docking returns `-10.0`.
 
+## CLI Options
+
+```
+docking-reward --help
+
+Options:
+  -i, --input-smiles PATH   Input file with SMILES (one per line) [required]
+  -o, --output-dir PATH     Output directory for results [required]
+  -c, --config-file PATH    YAML configuration file [required]
+  -w, --workers N           Number of parallel workers (default: 1)
+  -b, --parallel-backend    "multiprocessing" or "dask" (default: multiprocessing)
+  -v, --verbose             Show debug messages on console
+  -q, --quiet               Suppress console output (only errors)
+  --log-file PATH           Log file path (default: OUTPUT_DIR/docking.log)
+```
+
+**Console output:** Clean progress bars with summary statistics. All verbose warnings from RDKit/Vina are redirected to the log file.
+
 ## Output
 
 ```
 output_dir/
 ├── results.csv        # Simple output: smiles, score
 ├── breakdown.csv      # Detailed score breakdown (see below)
-└── poses/             # SDF files with docked poses
-    ├── mol_0_CCO.sdf
-    └── ...
-```
-
-Temporary files are stored in `./tmp/` (configurable):
-```
-tmp/
-├── ligands/           # Prepared ligand PDBQT files
-└── proteins/          # Prepared protein PDBQT files (cached)
+├── docking.log        # Detailed log with all RDKit/Vina warnings
+├── poses/             # SDF files with docked poses
+│   ├── mol_0_CCO.sdf
+│   └── ...
+└── tmp/               # Intermediate files
+    ├── ligands/       # Prepared ligand PDBQT files
+    └── proteins/      # Prepared protein PDBQT files (cached)
 ```
 
 ### breakdown.csv Columns

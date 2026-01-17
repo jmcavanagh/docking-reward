@@ -16,15 +16,40 @@ VALID_INTERACTION_TYPES = frozenset({
     "any",
 })
 
+# Valid docking backends
+VALID_DOCKING_BACKENDS = frozenset({
+    "vina",      # CPU-based AutoDock Vina (per-molecule parallelization)
+    "unidock",   # GPU-based Uni-Dock (batched docking)
+})
+
+# Valid scoring functions
+VALID_SCORING_FUNCTIONS = frozenset({
+    "vina",      # Standard Vina scoring function
+    "vinardo",   # Vinardo scoring (faster, similar accuracy)
+    "ad4",       # AutoDock4 scoring function
+})
+
 
 @dataclass
-class VinaConfig:
-    """Global Vina docking parameters."""
+class DockingConfig:
+    """Global docking parameters."""
 
+    # Docking backend: "vina" (CPU) or "unidock" (GPU)
+    backend: str = "vina"
+    # Scoring function: "vina", "vinardo", or "ad4"
+    scoring_function: str = "vina"
+    # Search exhaustiveness (higher = more thorough but slower)
     exhaustiveness: int = 8
+    # Number of poses to generate per ligand
     n_poses: int = 9
+    # Max energy difference from best pose (kcal/mol)
     energy_range: float = 3.0
+    # Random seed for reproducibility
     seed: Optional[int] = None
+
+
+# Alias for backwards compatibility
+VinaConfig = DockingConfig
 
 
 @dataclass
@@ -83,22 +108,47 @@ class DruglikenessConfig:
 class Config:
     """Root configuration object."""
 
-    vina: VinaConfig
+    docking: DockingConfig
     druglikeness: DruglikenessConfig
     targets: list[TargetConfig]
 
+    # Alias for backwards compatibility
+    @property
+    def vina(self) -> DockingConfig:
+        return self.docking
 
-def _parse_vina_config(data: dict) -> VinaConfig:
-    """Parse Vina configuration section."""
+
+def _parse_docking_config(data: dict) -> DockingConfig:
+    """Parse docking configuration section."""
     if not data:
-        return VinaConfig()
+        return DockingConfig()
 
-    return VinaConfig(
+    backend = data.get("backend", "vina")
+    if backend not in VALID_DOCKING_BACKENDS:
+        raise ValueError(
+            f"Invalid docking backend '{backend}'. "
+            f"Must be one of: {', '.join(sorted(VALID_DOCKING_BACKENDS))}"
+        )
+
+    scoring_function = data.get("scoring_function", "vina")
+    if scoring_function not in VALID_SCORING_FUNCTIONS:
+        raise ValueError(
+            f"Invalid scoring function '{scoring_function}'. "
+            f"Must be one of: {', '.join(sorted(VALID_SCORING_FUNCTIONS))}"
+        )
+
+    return DockingConfig(
+        backend=backend,
+        scoring_function=scoring_function,
         exhaustiveness=data.get("exhaustiveness", 8),
         n_poses=data.get("n_poses", 9),
         energy_range=data.get("energy_range", 3.0),
         seed=data.get("seed"),
     )
+
+
+# Alias for backwards compatibility
+_parse_vina_config = _parse_docking_config
 
 
 def _parse_interaction_config(data: dict) -> InteractionConfig:
@@ -212,7 +262,9 @@ def load_config(path: Path | str) -> Config:
         raise ValueError("Configuration file is empty")
 
     # Parse sections
-    vina_config = _parse_vina_config(data.get("vina", {}))
+    # Support both "docking" (new) and "vina" (legacy) config keys
+    docking_data = data.get("docking", data.get("vina", {}))
+    docking_config = _parse_docking_config(docking_data)
     druglikeness_config = _parse_druglikeness_config(data.get("druglikeness", {}))
 
     # Parse targets
@@ -223,7 +275,7 @@ def load_config(path: Path | str) -> Config:
     targets = [_parse_target_config(t) for t in targets_data]
 
     config = Config(
-        vina=vina_config,
+        docking=docking_config,
         druglikeness=druglikeness_config,
         targets=targets,
     )

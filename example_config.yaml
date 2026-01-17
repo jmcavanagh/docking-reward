@@ -2,7 +2,7 @@
 # Docking Reward Calculator Configuration
 # =============================================================================
 # This file configures how molecules are scored based on:
-#   1. Docking affinity to protein targets (via AutoDock Vina)
+#   1. Docking affinity to protein targets (via AutoDock Vina or Uni-Dock)
 #   2. Specific protein-ligand interactions (H-bonds, hydrophobic, etc.)
 #   3. Drug-likeness metrics (QED, custom scorers)
 #
@@ -10,11 +10,28 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Global Vina Settings
+# Docking Settings
 # -----------------------------------------------------------------------------
+# Configure docking backend, scoring function, and search parameters.
 # These settings apply to all docking runs unless overridden per-target.
 #
-vina:
+docking:
+  # Docking backend:
+  #   - "vina": CPU-based AutoDock Vina (parallelized per molecule)
+  #   - "unidock": GPU-based Uni-Dock (batched, MUCH faster with GPU!)
+  #
+  # For large batches (100+ molecules), unidock is recommended if you have a GPU.
+  # Uni-Dock can dock thousands of molecules in minutes on a modern GPU.
+  backend: vina
+
+  # Scoring function:
+  #   - "vina": Standard Vina scoring (default, most validated)
+  #   - "vinardo": Faster Vinardo scoring (similar accuracy, faster)
+  #   - "ad4": AutoDock4 scoring function
+  #
+  # Note: "ad4" may give different results than vina/vinardo.
+  scoring_function: vina
+
   # Exhaustiveness of the global search.
   # Higher values = more thorough search but slower.
   # Recommended: 8 for quick screening, 32 for production.
