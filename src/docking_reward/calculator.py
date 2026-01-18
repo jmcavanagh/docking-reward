@@ -526,12 +526,14 @@ class RewardCalculator:
 
         unidock_output_dir = self.temp_dir / "unidock_output"
 
-        tqdm.write(f"Docking to {len(self.config.targets)} target(s)...")
-        for target in tqdm(self.config.targets, desc="Docking targets", unit="target", ncols=80):
+        tqdm.write(f"Docking {len(ligand_pdbqts)} molecules to {len(self.config.targets)} target(s) on GPU...")
+        for target_idx, target in enumerate(self.config.targets):
             protein_pdbqt = self.protein_pdbqts.get(target.name)
             if protein_pdbqt is None:
                 tqdm.write(f"  Warning: No prepared PDBQT for target '{target.name}'")
                 continue
+
+            tqdm.write(f"  [{target_idx + 1}/{len(self.config.targets)}] Docking to '{target.name}'...")
 
             # Dock batch
             unidock_result = dock_batch_to_target(

@@ -1,0 +1,20 @@
+# Test configuration for Uni-Dock GPU docking
+# Usage: docking-reward -i test_smiles.txt -o output -c test_unidock_config.yaml
+
+docking:
+  backend: unidock          # GPU-accelerated docking
+  scoring_function: vina    # Standard Vina scoring
+  exhaustiveness: 8
+  n_poses: 9
+  energy_range: 3.0
+
+druglikeness:
+  qed:
+    weight: 1.0
+
+targets:
+  - name: "pgk2"
+    pdb_path: "pgk2_299ns_lig47.pdb"
+    center: [89.584, 72.913, 42.556]
+    size: [20.0, 20.0, 20.0]
+    weight: 1.0

@@ -95,9 +95,22 @@ See `example_config.yaml` for fully documented example. Key sections:
 - `druglikeness:` - QED weight, custom scorers
 - `targets:` - List of protein targets with box coordinates and interactions
 
+## Uni-Dock Error Handling
+
+Uni-Dock batch docking can fail if ANY ligand in the batch has issues. Common problems:
+- **Unsupported atom types**: Boron ("B"), Silicon, etc. not supported by AutoDock force field
+- **Too many torsions**: Default limit is 32 rotatable bonds
+
+The code handles this automatically:
+1. **Pre-filtering** (`ligand_prep.validate_pdbqt_for_unidock`): Checks atom types and torsion count before submission
+2. **Retry logic** (`unidock.run_unidock_batch`): If batch fails, parses stderr to identify bad ligands, excludes them, and retries (up to 3 attempts)
+
+Supported atom types are defined in `AUTODOCK_ATOM_TYPES` in `ligand_prep.py`.
+
 ## Common Issues
 
 1. **"openbabel not found"**: Must install via conda, not pip
 2. **Multiprocessing hangs**: Check for unpicklable objects in ScoringContext
 3. **RDKit warnings flooding console**: Ensure `logging_config.setup_logging()` is called
 4. **Uni-Dock slow**: Check GPU is being used (`nvidia-smi`)
+5. **All Uni-Dock molecules fail**: Usually one bad ligand (unsupported atom type or too many torsions) aborting the batch - now handled with pre-filtering and retry

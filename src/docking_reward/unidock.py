@@ -1,6 +1,7 @@
 """Uni-Dock GPU docking wrapper for batched ligand docking."""
 
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
@@ -9,8 +10,12 @@ from pathlib import Path
 from typing import Optional
 
 from .config import TargetConfig, VinaConfig
+from .ligand_prep import validate_pdbqt_for_unidock
 
 logger = logging.getLogger(__name__)
+
+# Maximum retry attempts for batch docking
+MAX_BATCH_RETRIES = 3
 
 # Scoring functions supported by Uni-Dock
 UNIDOCK_SCORING_FUNCTIONS = frozenset({
@@ -42,6 +47,73 @@ def check_unidock_available() -> bool:
     return shutil.which("unidock") is not None
 
 
+def filter_ligands_for_unidock(
+    ligand_pdbqts: list[Path],
+) -> tuple[list[Path], dict[int, str]]:
+    """
+    Pre-filter ligands for Uni-Dock compatibility.
+
+    Args:
+        ligand_pdbqts: List of paths to prepared ligand PDBQT files
+
+    Returns:
+        Tuple of (valid_ligands, errors_by_original_index)
+    """
+    valid_ligands = []
+    errors = {}
+
+    for idx, pdbqt_path in enumerate(ligand_pdbqts):
+        is_valid, error_msg = validate_pdbqt_for_unidock(pdbqt_path)
+        if is_valid:
+            valid_ligands.append(pdbqt_path)
+        else:
+            errors[idx] = f"Pre-filter rejected: {error_msg}"
+            logger.debug(f"Ligand {pdbqt_path.stem} rejected: {error_msg}")
+
+    if errors:
+        logger.info(
+            f"Pre-filtered {len(errors)} incompatible ligands "
+            f"({len(valid_ligands)} remaining)"
+        )
+
+    return valid_ligands, errors
+
+
+def parse_unidock_error(stderr: str) -> list[str]:
+    """
+    Parse Uni-Dock stderr to identify problematic ligand files.
+
+    Args:
+        stderr: Uni-Dock stderr output
+
+    Returns:
+        List of ligand filenames that caused errors
+    """
+    bad_ligands = []
+
+    # Common error patterns in Uni-Dock output
+    # Pattern 1: "ligand mol_123.pdbqt has atom type X"
+    atom_type_pattern = re.compile(r"ligand\s+(\S+\.pdbqt)\s+has\s+atom\s+type", re.IGNORECASE)
+
+    # Pattern 2: "mol_123.pdbqt: torsion"
+    torsion_pattern = re.compile(r"(\S+\.pdbqt):\s*torsion", re.IGNORECASE)
+
+    # Pattern 3: General file reference in error context
+    file_error_pattern = re.compile(r"error.*?(\bmol_\d+\.pdbqt\b)", re.IGNORECASE)
+
+    # Pattern 4: "Too many torsion" with file reference
+    too_many_torsion_pattern = re.compile(r"(\S+\.pdbqt).*?too\s+many\s+torsion", re.IGNORECASE)
+
+    for pattern in [atom_type_pattern, torsion_pattern, file_error_pattern, too_many_torsion_pattern]:
+        matches = pattern.findall(stderr)
+        for match in matches:
+            filename = match if match.endswith(".pdbqt") else f"{match}.pdbqt"
+            if filename not in bad_ligands:
+                bad_ligands.append(filename)
+
+    return bad_ligands
+
+
 def run_unidock_batch(
     ligand_pdbqts: list[Path],
     protein_pdbqt: Path,
@@ -54,6 +126,8 @@ def run_unidock_batch(
     seed: Optional[int] = None,
     scoring_function: str = "vina",
     target_name: str = "unknown",
+    prefilter: bool = True,
+    retry_on_failure: bool = True,
 ) -> UnidockResult:
     """
     Run Uni-Dock on a batch of ligands against a single target.
@@ -73,6 +147,8 @@ def run_unidock_batch(
         seed: Random seed for reproducibility
         scoring_function: Scoring function ("vina", "vinardo", "ad4")
         target_name: Name of target for result tracking
+        prefilter: Pre-filter ligands for compatibility (default True)
+        retry_on_failure: Retry with bad ligands removed on failure (default True)
 
     Returns:
         UnidockResult with scores and poses for all ligands
@@ -87,89 +163,153 @@ def run_unidock_batch(
         result.error = f"Invalid scoring function '{scoring_function}'. Must be one of: {', '.join(UNIDOCK_SCORING_FUNCTIONS)}"
         return result
 
-    try:
-        # Create output directory
-        output_dir.mkdir(parents=True, exist_ok=True)
+    # Build mapping from original indices to paths
+    original_indices = {path: idx for idx, path in enumerate(ligand_pdbqts)}
 
-        # Create a ligand index file for Uni-Dock batch mode
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False
-        ) as ligand_list_file:
-            ligand_list_path = Path(ligand_list_file.name)
-            for pdbqt_path in ligand_pdbqts:
-                ligand_list_file.write(f"{pdbqt_path}\n")
+    # Pre-filter ligands if enabled
+    working_ligands = list(ligand_pdbqts)
+    if prefilter:
+        working_ligands, prefilter_errors = filter_ligands_for_unidock(ligand_pdbqts)
+        result.errors.update(prefilter_errors)
 
-        # Build Uni-Dock command
-        cmd = [
-            "unidock",
-            "--receptor", str(protein_pdbqt),
-            "--ligand_index", str(ligand_list_path),
-            "--center_x", str(center[0]),
-            "--center_y", str(center[1]),
-            "--center_z", str(center[2]),
-            "--size_x", str(size[0]),
-            "--size_y", str(size[1]),
-            "--size_z", str(size[2]),
-            "--exhaustiveness", str(exhaustiveness),
-            "--num_modes", str(n_poses),
-            "--energy_range", str(energy_range),
-            "--scoring", scoring_function,
-            "--dir", str(output_dir),
-        ]
-
-        if seed is not None:
-            cmd.extend(["--seed", str(seed)])
-
-        logger.info(f"Running Uni-Dock on {len(ligand_pdbqts)} ligands for target '{target_name}'")
-        logger.debug(f"Command: {' '.join(cmd)}")
-
-        # Run Uni-Dock
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=3600,  # 1 hour timeout for large batches
-        )
-
-        if proc.returncode != 0:
-            result.error = f"Uni-Dock failed: {proc.stderr}"
-            logger.error(f"Uni-Dock stderr: {proc.stderr}")
+        if not working_ligands:
+            result.error = "All ligands rejected during pre-filtering"
             return result
 
-        # Parse results from output directory
-        # Uni-Dock writes output files as <ligand_name>_out.pdbqt
-        for idx, ligand_path in enumerate(ligand_pdbqts):
-            ligand_stem = ligand_path.stem
-            output_path = output_dir / f"{ligand_stem}_out.pdbqt"
+    # Track ligands excluded during retries
+    excluded_ligands: set[Path] = set()
+    attempt = 0
 
-            if not output_path.exists():
-                result.errors[idx] = f"No output file for ligand {ligand_stem}"
-                continue
+    while attempt < MAX_BATCH_RETRIES:
+        attempt += 1
 
-            try:
-                scores, poses = parse_unidock_output(output_path)
-                if scores:
-                    result.scores_by_ligand[idx] = scores
-                    result.poses_by_ligand[idx] = poses
-                    result.best_scores[idx] = min(scores)
-                else:
-                    result.errors[idx] = "No poses in output"
-            except Exception as e:
-                result.errors[idx] = f"Error parsing output: {e}"
+        # Remove excluded ligands from working set
+        current_ligands = [l for l in working_ligands if l not in excluded_ligands]
 
-        result.success = True
+        if not current_ligands:
+            result.error = "No valid ligands remaining after filtering"
+            break
 
-    except subprocess.TimeoutExpired:
-        result.error = "Uni-Dock timed out"
-    except FileNotFoundError:
-        result.error = "Uni-Dock not found. Install with: conda install -c conda-forge unidock"
-    except Exception as e:
-        result.error = f"Uni-Dock error: {e}"
-        logger.exception(f"Uni-Dock batch docking failed: {e}")
-    finally:
-        # Clean up ligand list file
-        if "ligand_list_path" in locals():
-            ligand_list_path.unlink(missing_ok=True)
+        logger.info(
+            f"Uni-Dock attempt {attempt}/{MAX_BATCH_RETRIES} "
+            f"with {len(current_ligands)} ligands for target '{target_name}'"
+        )
+
+        try:
+            # Create output directory
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create a ligand index file for Uni-Dock batch mode
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".txt", delete=False
+            ) as ligand_list_file:
+                ligand_list_path = Path(ligand_list_file.name)
+                for pdbqt_path in current_ligands:
+                    ligand_list_file.write(f"{pdbqt_path}\n")
+
+            # Build Uni-Dock command
+            cmd = [
+                "unidock",
+                "--receptor", str(protein_pdbqt),
+                "--ligand_index", str(ligand_list_path),
+                "--center_x", str(center[0]),
+                "--center_y", str(center[1]),
+                "--center_z", str(center[2]),
+                "--size_x", str(size[0]),
+                "--size_y", str(size[1]),
+                "--size_z", str(size[2]),
+                "--exhaustiveness", str(exhaustiveness),
+                "--num_modes", str(n_poses),
+                "--energy_range", str(energy_range),
+                "--scoring", scoring_function,
+                "--dir", str(output_dir),
+            ]
+
+            if seed is not None:
+                cmd.extend(["--seed", str(seed)])
+
+            logger.debug(f"Command: {' '.join(cmd)}")
+
+            # Run Uni-Dock
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=3600,  # 1 hour timeout for large batches
+            )
+
+            if proc.returncode != 0:
+                stderr = proc.stderr or ""
+                logger.warning(f"Uni-Dock failed (attempt {attempt}): {stderr[:500]}")
+
+                if retry_on_failure and attempt < MAX_BATCH_RETRIES:
+                    # Try to identify and exclude bad ligands
+                    bad_filenames = parse_unidock_error(stderr)
+
+                    if bad_filenames:
+                        for ligand_path in current_ligands:
+                            if ligand_path.name in bad_filenames:
+                                excluded_ligands.add(ligand_path)
+                                orig_idx = original_indices.get(ligand_path)
+                                if orig_idx is not None:
+                                    result.errors[orig_idx] = f"Excluded after batch failure: {stderr[:200]}"
+                                logger.info(f"Excluding problematic ligand: {ligand_path.name}")
+
+                        if excluded_ligands:
+                            logger.info(
+                                f"Retrying without {len(excluded_ligands)} problematic ligands"
+                            )
+                            continue
+                    else:
+                        # Couldn't identify specific bad ligands
+                        logger.warning("Could not identify problematic ligands from error output")
+
+                # No retry or couldn't identify bad ligands
+                result.error = f"Uni-Dock failed: {stderr}"
+                logger.error(f"Uni-Dock stderr: {stderr}")
+                break
+
+            # Success! Parse results from output directory
+            for ligand_path in current_ligands:
+                ligand_stem = ligand_path.stem
+                output_path = output_dir / f"{ligand_stem}_out.pdbqt"
+                orig_idx = original_indices.get(ligand_path)
+
+                if orig_idx is None:
+                    continue
+
+                if not output_path.exists():
+                    result.errors[orig_idx] = f"No output file for ligand {ligand_stem}"
+                    continue
+
+                try:
+                    scores, poses = parse_unidock_output(output_path)
+                    if scores:
+                        result.scores_by_ligand[orig_idx] = scores
+                        result.poses_by_ligand[orig_idx] = poses
+                        result.best_scores[orig_idx] = min(scores)
+                    else:
+                        result.errors[orig_idx] = "No poses in output"
+                except Exception as e:
+                    result.errors[orig_idx] = f"Error parsing output: {e}"
+
+            result.success = True
+            break  # Success, exit retry loop
+
+        except subprocess.TimeoutExpired:
+            result.error = "Uni-Dock timed out"
+            break
+        except FileNotFoundError:
+            result.error = "Uni-Dock not found. Install with: conda install -c conda-forge unidock"
+            break
+        except Exception as e:
+            result.error = f"Uni-Dock error: {e}"
+            logger.exception(f"Uni-Dock batch docking failed: {e}")
+            break
+        finally:
+            # Clean up ligand list file
+            if "ligand_list_path" in locals():
+                ligand_list_path.unlink(missing_ok=True)
 
     return result
 

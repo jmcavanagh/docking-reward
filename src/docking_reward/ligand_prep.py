@@ -174,6 +174,62 @@ def mol_to_sdf(mol: Chem.Mol, output_path: Path) -> bool:
         return False
 
 
+# AutoDock/Uni-Dock supported atom types
+# See: https://autodock.scripps.edu/resources/preparing-ligand-files-for-autodock/
+AUTODOCK_ATOM_TYPES = frozenset({
+    "H", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I",
+    "A", "G",  # Aromatic carbon/nitrogen
+    "NA", "NS", "OA", "OS", "SA",  # H-bond acceptor variants
+    "HD",  # H-bond donor hydrogen
+    "Mg", "Mn", "Zn", "Ca", "Fe",  # Metals
+})
+
+# Maximum rotatable bonds for Uni-Dock (default limit is 32, but can vary)
+MAX_TORSIONS_UNIDOCK = 32
+
+
+def validate_pdbqt_for_unidock(pdbqt_path: Path) -> tuple[bool, str]:
+    """
+    Validate a PDBQT file for Uni-Dock compatibility.
+
+    Checks for:
+    - Unsupported atom types (like Boron)
+    - Too many rotatable bonds/torsions
+
+    Args:
+        pdbqt_path: Path to PDBQT file
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    try:
+        with open(pdbqt_path) as f:
+            content = f.read()
+
+        # Count torsions (BRANCH/ENDBRANCH pairs indicate rotatable bonds)
+        n_torsions = content.count("BRANCH")
+
+        if n_torsions > MAX_TORSIONS_UNIDOCK:
+            return False, f"Too many torsions ({n_torsions} > {MAX_TORSIONS_UNIDOCK})"
+
+        # Check atom types
+        for line in content.split("\n"):
+            if line.startswith("ATOM") or line.startswith("HETATM"):
+                # PDBQT format: atom type is in columns 77-78 (0-indexed: 76:78)
+                # But sometimes it's at the end after charges
+                parts = line.split()
+                if len(parts) >= 3:
+                    # Atom type is typically the last field
+                    atom_type = parts[-1]
+                    if atom_type not in AUTODOCK_ATOM_TYPES:
+                        return False, f"Unsupported atom type: {atom_type}"
+
+        return True, ""
+
+    except Exception as e:
+        return False, f"Error reading PDBQT: {e}"
+
+
 def sanitize_smiles_for_filename(smiles: str, max_length: int = 50) -> str:
     """
     Convert SMILES string to a safe filename component.
