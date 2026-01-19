@@ -4,7 +4,6 @@ import logging
 import re
 import shutil
 import subprocess
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -199,21 +198,17 @@ def run_unidock_batch(
             # Create output directory
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            # Create a ligand index file for Uni-Dock batch mode
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".txt", delete=False
-            ) as ligand_list_file:
-                ligand_list_path = Path(ligand_list_file.name)
-                for pdbqt_path in current_ligands:
-                    ligand_list_file.write(f"{pdbqt_path}\n")
-
             # Build Uni-Dock command
-            # Use --gpu_batch for true GPU batch processing (parallel on GPU)
-            # --ligand_index processes ligands sequentially
+            # Use --gpu_batch with ligand paths directly for true GPU batch processing
             cmd = [
                 "unidock",
                 "--receptor", str(protein_pdbqt),
-                "--gpu_batch", str(ligand_list_path),
+                "--gpu_batch",
+            ]
+            # Add all ligand paths as separate arguments
+            cmd.extend([str(p) for p in current_ligands])
+
+            cmd.extend([
                 "--center_x", str(center[0]),
                 "--center_y", str(center[1]),
                 "--center_z", str(center[2]),
@@ -225,7 +220,7 @@ def run_unidock_batch(
                 "--energy_range", str(energy_range),
                 "--scoring", scoring_function,
                 "--dir", str(output_dir),
-            ]
+            ])
 
             if seed is not None:
                 cmd.extend(["--seed", str(seed)])
@@ -308,10 +303,6 @@ def run_unidock_batch(
             result.error = f"Uni-Dock error: {e}"
             logger.exception(f"Uni-Dock batch docking failed: {e}")
             break
-        finally:
-            # Clean up ligand list file
-            if "ligand_list_path" in locals():
-                ligand_list_path.unlink(missing_ok=True)
 
     return result
 
