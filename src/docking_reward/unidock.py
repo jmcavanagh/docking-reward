@@ -208,10 +208,12 @@ def run_unidock_batch(
                     ligand_list_file.write(f"{pdbqt_path}\n")
 
             # Build Uni-Dock command
+            # Use --gpu_batch for true GPU batch processing (parallel on GPU)
+            # --ligand_index processes ligands sequentially
             cmd = [
                 "unidock",
                 "--receptor", str(protein_pdbqt),
-                "--ligand_index", str(ligand_list_path),
+                "--gpu_batch", str(ligand_list_path),
                 "--center_x", str(center[0]),
                 "--center_y", str(center[1]),
                 "--center_z", str(center[2]),
