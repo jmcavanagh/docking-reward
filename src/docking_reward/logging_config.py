@@ -132,6 +132,10 @@ def suppress_rdkit_warnings() -> None:
     warnings.filterwarnings("ignore", category=UserWarning, module="rdkit")
     warnings.filterwarnings("ignore", message=".*RDKit.*")
 
+    # Suppress SWIG deprecation warnings from OpenBabel/RDKit bindings
+    warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*Swig.*")
+    warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*swigvarlink.*")
+
 
 # Auto-suppress on import
 suppress_rdkit_warnings()

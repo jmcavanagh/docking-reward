@@ -851,7 +851,7 @@ class RewardCalculator:
         # Build header dynamically based on targets
         target_names = [t.name for t in self.config.targets]
 
-        header = ["smiles", "total_score", "error"]
+        header = ["ligand_id", "smiles", "total_score", "error"]
 
         # Add columns for each target
         for name in target_names:
@@ -871,6 +871,7 @@ class RewardCalculator:
 
             for result in results:
                 row = [
+                    f"mol_{result.index}",
                     result.smiles,
                     f"{result.score:.4f}",
                     result.error or "",
