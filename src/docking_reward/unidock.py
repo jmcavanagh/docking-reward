@@ -228,10 +228,11 @@ def run_unidock_batch(
 
             logger.debug(f"Command: {' '.join(cmd)}")
 
-            # Run Uni-Dock
+            # Run Uni-Dock - let stdout pass through for verbosity output
             proc = subprocess.run(
                 cmd,
-                capture_output=True,
+                stdout=None,  # Let stdout print to console (verbosity output)
+                stderr=subprocess.PIPE,  # Capture stderr for error handling
                 text=True,
                 timeout=3600,  # 1 hour timeout for large batches
             )
