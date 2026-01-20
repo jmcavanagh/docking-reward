@@ -222,6 +222,7 @@ def run_unidock_batch(
                 "--energy_range", str(energy_range),
                 "--scoring", scoring_function,
                 "--dir", str(output_dir),
+                "--verbosity", str(2),
             ])
 
             if seed is not None:
