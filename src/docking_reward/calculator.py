@@ -303,6 +303,143 @@ def _prepare_ligand_task(args: tuple) -> tuple[int, str, Optional[Path], Optiona
     return (index, smiles, ligand_pdbqt, mol_3d, None)
 
 
+def _compute_score_task(args: tuple) -> "ScoringResult":
+    """
+    Compute score for a single molecule (parallelizable).
+
+    Args:
+        args: Tuple of (index, smiles, mol_3d, docking_results, config, output_dir, save_poses)
+
+    Returns:
+        ScoringResult for this molecule
+    """
+    (
+        index,
+        smiles,
+        mol_3d,
+        mol_docking_results,  # Dict of target_name -> result for this molecule
+        config,
+        output_dir,
+        save_poses,
+    ) = args
+
+    breakdown = ScoreBreakdown(
+        docking_scores={},
+        docking_contributions={},
+        interaction_scores={},
+        interaction_pose_idx={},
+    )
+    total_score = 0.0
+    all_poses = []
+    any_success = False
+
+    for target in config.targets:
+        mol_result = mol_docking_results.get(target.name)
+
+        if mol_result is None or "error" in mol_result:
+            breakdown.docking_scores[target.name] = None
+            breakdown.docking_contributions[target.name] = 0.0
+            breakdown.interaction_scores[target.name] = 0.0
+            continue
+
+        any_success = True
+        best_score = mol_result["best_score"]
+        scores = mol_result["scores"]
+        pose_strings = mol_result["poses"]
+
+        # Docking score contribution
+        docking_contribution = target.weight * (-best_score)
+        total_score += docking_contribution
+
+        breakdown.docking_scores[target.name] = best_score
+        breakdown.docking_contributions[target.name] = docking_contribution
+
+        # Convert pose strings to RDKit molecules for interaction analysis
+        poses = []
+        for pose_str in pose_strings:
+            mol = pdbqt_to_mol(pose_str)
+            if mol is not None:
+                poses.append(mol)
+
+        # Interaction scoring
+        max_interaction_score = 0.0
+        best_pose_idx = 0
+
+        if target.interactions and poses and scores:
+            best_energy = best_score
+            threshold = target.interaction_energy_threshold
+
+            for pose_idx, (pose, score) in enumerate(zip(poses, scores)):
+                if score <= best_energy + threshold:
+                    interaction_counts = analyze_interactions(pose, target.pdb_path)
+                    pose_interaction_score = score_interactions(
+                        interaction_counts, target.interactions
+                    )
+                    if pose_interaction_score > max_interaction_score:
+                        max_interaction_score = pose_interaction_score
+                        best_pose_idx = pose_idx
+
+            total_score += max_interaction_score
+
+        breakdown.interaction_scores[target.name] = max_interaction_score
+        breakdown.interaction_pose_idx[target.name] = best_pose_idx
+
+        # Collect poses for output
+        for i, pose in enumerate(poses):
+            pose.SetProp("_Target", target.name)
+            pose.SetProp("_Pose", str(i + 1))
+            if i < len(scores):
+                pose.SetProp("_VinaScore", f"{scores[i]:.2f}")
+            all_poses.append(pose)
+
+    if not any_success:
+        return ScoringResult(
+            index=index,
+            smiles=smiles,
+            score=FAILURE_SCORE,
+            error="Docking failed for all targets",
+        )
+
+    # Drug-likeness contribution
+    druglikeness_scorer = DruglikenessScorer(config.druglikeness)
+    druglikeness_score = druglikeness_scorer.score(mol_3d)
+    total_score += druglikeness_score
+
+    if config.druglikeness.qed:
+        from .druglikeness import calculate_qed
+        breakdown.qed_score = calculate_qed(mol_3d)
+        breakdown.qed_contribution = config.druglikeness.qed.weight * breakdown.qed_score
+
+    breakdown.total_score = total_score
+
+    # Save poses if requested
+    pose_path = None
+    if save_poses and all_poses and output_dir is not None:
+        try:
+            pose_dir = Path(output_dir) / "poses"
+            pose_dir.mkdir(parents=True, exist_ok=True)
+            safe_smiles = sanitize_smiles_for_filename(smiles)
+            pose_filename = f"mol_{index}_{safe_smiles}.sdf"
+            pose_path = pose_dir / pose_filename
+
+            writer = Chem.SDWriter(str(pose_path))
+            for pose in all_poses:
+                if pose is not None:
+                    writer.write(pose)
+            writer.close()
+        except Exception as e:
+            logger.warning(f"Failed to save poses for mol {index}: {e}")
+            pose_path = None
+
+    return ScoringResult(
+        index=index,
+        smiles=smiles,
+        score=total_score,
+        pose_path=pose_path,
+        breakdown=breakdown,
+    )
+
+
 class RewardCalculator:
     """
     Main class for calculating docking-based reward scores.
@@ -568,23 +705,40 @@ class RewardCalculator:
             docking_results_by_target[target.name] = target_results
             tqdm.write(f"  {target.name}: {n_docked}/{len(ligand_pdbqts)} docked")
 
-        # Phase 3: Calculate scores for each molecule
-        scoring_results = []
-        for orig_idx, pdbqt_path in tqdm(ligand_pdbqts, desc="Scoring molecules", unit="mol", ncols=80):
+        # Phase 3: Calculate scores for each molecule (parallelized)
+        # Build per-molecule docking results dict for parallelization
+        scoring_args = []
+        for orig_idx, pdbqt_path in ligand_pdbqts:
             smiles = smiles_list[orig_idx]
             mol_3d = mol_3ds[orig_idx]
 
-            # Compute score from docking results
-            result = self._compute_molecule_score(
-                index=orig_idx,
-                smiles=smiles,
-                mol_3d=mol_3d,
-                docking_results_by_target=docking_results_by_target,
-                output_dir=output_dir,
-                save_poses=save_poses,
-            )
-            results[orig_idx] = result
-            scoring_results.append(result)
+            # Collect this molecule's results across all targets
+            mol_docking_results = {}
+            for target_name, target_results in docking_results_by_target.items():
+                if orig_idx in target_results:
+                    mol_docking_results[target_name] = target_results[orig_idx]
+
+            scoring_args.append((
+                orig_idx,
+                smiles,
+                mol_3d,
+                mol_docking_results,
+                self.config,
+                output_dir,
+                save_poses,
+            ))
+
+        # Run scoring in parallel
+        scoring_results = list(tqdm(
+            executor.map(_compute_score_task, scoring_args),
+            total=len(scoring_args),
+            desc="Scoring molecules",
+            unit="mol",
+            ncols=80,
+        ))
+
+        for result in scoring_results:
+            results[result.index] = result
 
         # Print summary statistics
         n_success = sum(1 for r in scoring_results if r.error is None)
@@ -604,132 +758,6 @@ class RewardCalculator:
 
         # Return in order
         return [results[i] for i in range(len(smiles_list))]
-
-    def _compute_molecule_score(
-        self,
-        index: int,
-        smiles: str,
-        mol_3d: Chem.Mol,
-        docking_results_by_target: dict,
-        output_dir: Optional[Path],
-        save_poses: bool,
-    ) -> ScoringResult:
-        """Compute final score for a molecule from docking results."""
-        total_score = 0.0
-
-        breakdown = ScoreBreakdown(
-            docking_scores={},
-            docking_contributions={},
-            interaction_scores={},
-            interaction_pose_idx={},
-        )
-
-        all_poses: list[Chem.Mol] = []
-        any_success = False
-
-        for target in self.config.targets:
-            target_results = docking_results_by_target.get(target.name, {})
-            mol_result = target_results.get(index)
-
-            if mol_result is None or "error" in mol_result:
-                breakdown.docking_scores[target.name] = None
-                breakdown.docking_contributions[target.name] = 0.0
-                breakdown.interaction_scores[target.name] = 0.0
-                continue
-
-            any_success = True
-            best_score = mol_result["best_score"]
-            scores = mol_result["scores"]
-            pose_strings = mol_result["poses"]
-
-            # Docking score contribution
-            docking_contribution = target.weight * (-best_score)
-            total_score += docking_contribution
-
-            breakdown.docking_scores[target.name] = best_score
-            breakdown.docking_contributions[target.name] = docking_contribution
-
-            # Convert pose strings to RDKit molecules for interaction analysis
-            poses = []
-            for pose_str in pose_strings:
-                mol = pdbqt_to_mol(pose_str)
-                if mol is not None:
-                    poses.append(mol)
-
-            # Interaction scoring
-            max_interaction_score = 0.0
-            best_pose_idx = 0
-
-            if target.interactions and poses and scores:
-                best_energy = best_score
-                threshold = target.interaction_energy_threshold
-
-                for pose_idx, (pose, score) in enumerate(zip(poses, scores)):
-                    if score <= best_energy + threshold:
-                        interaction_counts = analyze_interactions(pose, target.pdb_path)
-                        pose_interaction_score = score_interactions(
-                            interaction_counts, target.interactions
-                        )
-                        if pose_interaction_score > max_interaction_score:
-                            max_interaction_score = pose_interaction_score
-                            best_pose_idx = pose_idx
-
-                total_score += max_interaction_score
-
-            breakdown.interaction_scores[target.name] = max_interaction_score
-            breakdown.interaction_pose_idx[target.name] = best_pose_idx
-
-            # Collect poses for output
-            for i, pose in enumerate(poses):
-                pose.SetProp("_Target", target.name)
-                pose.SetProp("_Pose", str(i + 1))
-                if i < len(scores):
-                    pose.SetProp("_VinaScore", f"{scores[i]:.2f}")
-                all_poses.append(pose)
-
-        if not any_success:
-            return ScoringResult(
-                index=index,
-                smiles=smiles,
-                score=FAILURE_SCORE,
-                error="Docking failed for all targets",
-            )
-
-        # Drug-likeness contribution
-        druglikeness_scorer = DruglikenessScorer(self.config.druglikeness)
-        druglikeness_score = druglikeness_scorer.score(mol_3d)
-        total_score += druglikeness_score
-
-        if self.config.druglikeness.qed:
-            from .druglikeness import calculate_qed
-            breakdown.qed_score = calculate_qed(mol_3d)
-            breakdown.qed_contribution = self.config.druglikeness.qed.weight * breakdown.qed_score
-
-        breakdown.total_score = total_score
-
-        # Save poses if requested
-        pose_path = None
-        if save_poses and output_dir and all_poses:
-            safe_smiles = sanitize_smiles_for_filename(smiles)
-            pose_path = output_dir / "poses" / f"mol_{index}_{safe_smiles}.sdf"
-            pose_path.parent.mkdir(parents=True, exist_ok=True)
-
-            try:
-                writer = Chem.SDWriter(str(pose_path))
-                for pose in all_poses:
-                    writer.write(pose)
-                writer.close()
-            except Exception as e:
-                logger.warning(f"Failed to save poses for mol {index}: {e}")
-                pose_path = None
-
-        return ScoringResult(
-            index=index,
-            smiles=smiles,
-            score=total_score,
-            pose_path=pose_path,
-            breakdown=breakdown,
-        )
 
     def score_file(
         self,
