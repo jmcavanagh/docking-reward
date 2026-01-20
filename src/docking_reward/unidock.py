@@ -218,7 +218,7 @@ def run_unidock_batch(
                 "--size_y", str(size[1]),
                 "--size_z", str(size[2]),
                 "--exhaustiveness", str(exhaustiveness),
-                "--num_modes", str(n_poses),
+                "--max_step", str(n_poses),
                 "--energy_range", str(energy_range),
                 "--scoring", scoring_function,
                 "--dir", str(output_dir),
