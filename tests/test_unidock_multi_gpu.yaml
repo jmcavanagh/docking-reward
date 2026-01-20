@@ -28,3 +28,8 @@ targets:
       - residue: "TYR245"
         type: "hydrogen_bond"
         weight: 1.0
+  - name: "pgk1"
+    pdb_path: "pgk1_fixed_protein.pdb"
+    center: [23.823, 17.933, 36.860]
+    size: [20.0, 20.0, 20.0]
+    weight: -0.8
