@@ -25,6 +25,7 @@ from .config import (
     VinaConfig,
     load_config,
 )
+from .ligand_prep import protonate_smiles
 
 __version__ = "0.1.0"
 __all__ = [
@@ -37,4 +38,5 @@ __all__ = [
     "QEDConfig",
     "CustomScorerConfig",
     "load_config",
+    "protonate_smiles",
 ]

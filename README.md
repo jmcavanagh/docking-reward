@@ -7,6 +7,7 @@ Score molecules based on docking affinity, protein-ligand interactions, and drug
 - Multiple scoring functions: vina, vinardo, ad4
 - Interaction-based scoring (H-bonds, hydrophobic, salt bridges, pi-stacking)
 - Drug-likeness scoring (QED + custom scorers)
+- pH-dependent protonation via Dimorphite-DL (pH 7.4 by default)
 - Parallel processing with multiprocessing or Dask
 
 ## Installation

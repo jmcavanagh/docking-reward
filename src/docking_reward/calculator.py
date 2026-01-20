@@ -14,9 +14,11 @@ from .docking import DockingResult, dock_to_targets, pdbqt_to_mol
 from .druglikeness import DruglikenessScorer
 from .interactions import analyze_interactions, score_interactions
 from .ligand_prep import (
+    DEFAULT_PH,
     embed_molecule,
     mol_to_pdbqt,
     mol_to_sdf,
+    protonate_smiles,
     sanitize_smiles_for_filename,
     smiles_to_mol,
 )
@@ -106,8 +108,11 @@ def _score_single_molecule(task: ScoringTask) -> ScoringResult:
     smiles = task.smiles
     index = task.index
 
+    # Protonate for physiological pH
+    protonated_smiles = protonate_smiles(smiles, ph=DEFAULT_PH)
+
     # Parse SMILES
-    mol = smiles_to_mol(smiles)
+    mol = smiles_to_mol(protonated_smiles)
     if mol is None:
         return ScoringResult(
             index=index,
@@ -285,8 +290,11 @@ def _prepare_ligand_task(args: tuple) -> tuple[int, str, Optional[Path], Optiona
     """
     index, smiles, temp_dir = args
 
+    # Protonate for physiological pH
+    protonated_smiles = protonate_smiles(smiles, ph=DEFAULT_PH)
+
     # Parse SMILES
-    mol = smiles_to_mol(smiles)
+    mol = smiles_to_mol(protonated_smiles)
     if mol is None:
         return (index, smiles, None, None, "Invalid SMILES")
 

@@ -10,6 +10,11 @@ from rdkit.Chem import AllChem
 
 logger = logging.getLogger(__name__)
 
+# Default pH for protonation (physiological pH)
+DEFAULT_PH = 7.4
+# pH range for Dimorphite-DL (centered on target pH)
+PH_RANGE = 0.5
+
 
 def smiles_to_mol(smiles: str) -> Optional[Chem.Mol]:
     """
@@ -30,6 +35,53 @@ def smiles_to_mol(smiles: str) -> Optional[Chem.Mol]:
     except Exception as e:
         logger.warning(f"Error parsing SMILES '{smiles}': {e}")
         return None
+
+
+def protonate_smiles(smiles: str, ph: float = DEFAULT_PH) -> str:
+    """
+    Protonate a SMILES string for a target pH using Dimorphite-DL.
+
+    This ensures correct protonation states for docking:
+    - Carboxylic acids (-COOH) become carboxylates (-COO⁻) at pH 7.4
+    - Primary amines become protonated (-NH3⁺) at pH 7.4
+    - etc.
+
+    Args:
+        smiles: Input SMILES string
+        ph: Target pH (default 7.4)
+
+    Returns:
+        Protonated SMILES string (returns original if protonation fails)
+    """
+    try:
+        from dimorphite_dl import protonate_smiles as dimorphite_protonate
+
+        # Dimorphite-DL returns a list of possible protonation states
+        # We use a narrow pH range to get the dominant form
+        protonated = dimorphite_protonate(
+            smiles,
+            ph_min=ph - PH_RANGE,
+            ph_max=ph + PH_RANGE,
+        )
+
+        if protonated:
+            # Return the first (most likely) protonation state
+            result = protonated[0]
+            logger.debug(f"Protonated {smiles} -> {result} at pH {ph}")
+            return result
+        else:
+            logger.debug(f"Dimorphite-DL returned no results for {smiles}, using original")
+            return smiles
+
+    except ImportError:
+        logger.warning(
+            "dimorphite-dl not installed. Install with: pip install dimorphite-dl. "
+            "Using original SMILES without pH-dependent protonation."
+        )
+        return smiles
+    except Exception as e:
+        logger.debug(f"Protonation failed for {smiles}: {e}, using original")
+        return smiles
 
 
 def embed_molecule(mol: Chem.Mol, n_conformers: int = 1, random_seed: int = 42) -> Optional[Chem.Mol]:
@@ -122,18 +174,28 @@ def mol_to_pdbqt(mol: Chem.Mol, output_path: Path) -> bool:
         return False
 
 
-def prepare_ligand(smiles: str, output_dir: Path, index: int = 0) -> Optional[Path]:
+def prepare_ligand(
+    smiles: str,
+    output_dir: Path,
+    index: int = 0,
+    ph: Optional[float] = DEFAULT_PH,
+) -> Optional[Path]:
     """
-    Full ligand preparation pipeline: SMILES → 3D → PDBQT.
+    Full ligand preparation pipeline: SMILES → protonate → 3D → PDBQT.
 
     Args:
         smiles: Input SMILES string
         output_dir: Directory for output files
         index: Index for naming the output file
+        ph: Target pH for protonation (default 7.4, None to skip protonation)
 
     Returns:
         Path to PDBQT file, or None if any step fails
     """
+    # Protonate for target pH (if specified)
+    if ph is not None:
+        smiles = protonate_smiles(smiles, ph=ph)
+
     # Parse SMILES
     mol = smiles_to_mol(smiles)
     if mol is None:
