@@ -1,11 +1,9 @@
 """Uni-Dock GPU docking wrapper for batched ligand docking."""
 
 import logging
-import os
 import re
 import shutil
 import subprocess
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -200,17 +198,17 @@ def run_unidock_batch(
             # Create output directory
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            # Build Uni-Dock command
-            # Use --gpu_batch with ligand paths directly for true GPU batch processing
+            # Write ligand index file (one path per line)
+            ligand_index_file = output_dir / "ligand_index.txt"
+            with open(ligand_index_file, "w") as f:
+                for ligand_path in current_ligands:
+                    f.write(f"{ligand_path}\n")
+
+            # Build Uni-Dock command using --ligand_index for batch processing
             cmd = [
                 "unidock",
                 "--receptor", str(protein_pdbqt),
-                "--gpu_batch",
-            ]
-            # Add all ligand paths as separate arguments
-            cmd.extend([str(p) for p in current_ligands])
-
-            cmd.extend([
+                "--ligand_index", str(ligand_index_file),
                 "--center_x", str(center[0]),
                 "--center_y", str(center[1]),
                 "--center_z", str(center[2]),
@@ -218,12 +216,12 @@ def run_unidock_batch(
                 "--size_y", str(size[1]),
                 "--size_z", str(size[2]),
                 "--search_mode", "fast",
-                "--num_modes", "4",
+                "--num_modes", str(n_poses),
                 "--energy_range", str(energy_range),
                 "--scoring", scoring_function,
                 "--dir", str(output_dir),
-                "--verbosity", str(2),
-            ])
+                "--verbosity", "2",
+            ]
 
             if seed is not None:
                 cmd.extend(["--seed", str(seed)])
@@ -354,283 +352,6 @@ def parse_unidock_output(output_path: Path) -> tuple[list[float], list[str]]:
     return scores, poses
 
 
-def _run_gpu_batch(
-    gpu_id: int,
-    ligand_pdbqts: list[Path],
-    protein_pdbqt: Path,
-    center: tuple[float, float, float],
-    size: tuple[float, float, float],
-    output_dir: Path,
-    exhaustiveness: int,
-    n_poses: int,
-    energy_range: float,
-    seed: Optional[int],
-    scoring_function: str,
-    target_name: str,
-) -> UnidockResult:
-    """
-    Run Uni-Dock on a specific GPU.
-
-    This is a wrapper for run_unidock_batch that sets CUDA_VISIBLE_DEVICES.
-
-    Args:
-        gpu_id: GPU index to use (0, 1, 2, ...)
-        Other args: Same as run_unidock_batch
-
-    Returns:
-        UnidockResult from this GPU batch
-    """
-    # Set environment to use only the specified GPU
-    env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-
-    logger.info(f"Starting Uni-Dock on GPU {gpu_id} with {len(ligand_pdbqts)} ligands")
-
-    # Create GPU-specific output directory
-    gpu_output_dir = output_dir / f"gpu_{gpu_id}"
-
-    result = UnidockResult(target_name=target_name)
-
-    if not ligand_pdbqts:
-        result.error = "No ligands provided"
-        return result
-
-    # Build mapping from original indices to paths
-    original_indices = {path: idx for idx, path in enumerate(ligand_pdbqts)}
-
-    # Pre-filter ligands
-    working_ligands, prefilter_errors = filter_ligands_for_unidock(ligand_pdbqts)
-    result.errors.update(prefilter_errors)
-
-    if not working_ligands:
-        result.error = "All ligands rejected during pre-filtering"
-        return result
-
-    try:
-        gpu_output_dir.mkdir(parents=True, exist_ok=True)
-
-        cmd = [
-            "unidock",
-            "--receptor", str(protein_pdbqt),
-            "--gpu_batch",
-        ]
-        cmd.extend([str(p) for p in working_ligands])
-        cmd.extend([
-            "--center_x", str(center[0]),
-            "--center_y", str(center[1]),
-            "--center_z", str(center[2]),
-            "--size_x", str(size[0]),
-            "--size_y", str(size[1]),
-            "--size_z", str(size[2]),
-            "--exhaustiveness", str(exhaustiveness),
-            "--num_modes", str(n_poses),
-            "--energy_range", str(energy_range),
-            "--scoring", scoring_function,
-            "--dir", str(gpu_output_dir),
-        ])
-
-        if seed is not None:
-            cmd.extend(["--seed", str(seed)])
-
-        logger.debug(f"GPU {gpu_id} command: {' '.join(cmd[:10])}...")
-
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=3600,
-            env=env,  # Use modified environment with CUDA_VISIBLE_DEVICES
-        )
-
-        if proc.returncode != 0:
-            result.error = f"Uni-Dock failed on GPU {gpu_id}: {proc.stderr[:500]}"
-            logger.error(f"GPU {gpu_id} stderr: {proc.stderr}")
-            return result
-
-        # Parse results
-        for ligand_path in working_ligands:
-            ligand_stem = ligand_path.stem
-            output_path = gpu_output_dir / f"{ligand_stem}_out.pdbqt"
-            orig_idx = original_indices.get(ligand_path)
-
-            if orig_idx is None:
-                continue
-
-            if not output_path.exists():
-                result.errors[orig_idx] = f"No output file for ligand {ligand_stem}"
-                continue
-
-            try:
-                scores, poses = parse_unidock_output(output_path)
-                if scores:
-                    result.scores_by_ligand[orig_idx] = scores
-                    result.poses_by_ligand[orig_idx] = poses
-                    result.best_scores[orig_idx] = min(scores)
-                else:
-                    result.errors[orig_idx] = "No poses in output"
-            except Exception as e:
-                result.errors[orig_idx] = f"Error parsing output: {e}"
-
-        result.success = True
-        logger.info(f"GPU {gpu_id} completed: {len(result.best_scores)} ligands docked")
-
-    except subprocess.TimeoutExpired:
-        result.error = f"Uni-Dock timed out on GPU {gpu_id}"
-    except FileNotFoundError:
-        result.error = "Uni-Dock not found"
-    except Exception as e:
-        result.error = f"Uni-Dock error on GPU {gpu_id}: {e}"
-        logger.exception(f"GPU {gpu_id} docking failed: {e}")
-
-    return result
-
-
-def run_unidock_multi_gpu(
-    ligand_pdbqts: list[Path],
-    protein_pdbqt: Path,
-    center: tuple[float, float, float],
-    size: tuple[float, float, float],
-    output_dir: Path,
-    n_gpus: int,
-    exhaustiveness: int = 8,
-    n_poses: int = 9,
-    energy_range: float = 3.0,
-    seed: Optional[int] = None,
-    scoring_function: str = "vina",
-    target_name: str = "unknown",
-) -> UnidockResult:
-    """
-    Run Uni-Dock across multiple GPUs in parallel.
-
-    Splits the ligand batch evenly across GPUs and runs them concurrently.
-
-    Args:
-        ligand_pdbqts: List of paths to prepared ligand PDBQT files
-        protein_pdbqt: Path to prepared protein PDBQT
-        center: Docking box center (x, y, z) in Angstroms
-        size: Docking box size (x, y, z) in Angstroms
-        output_dir: Directory for output pose files
-        n_gpus: Number of GPUs to use
-        exhaustiveness: Search exhaustiveness
-        n_poses: Number of poses per ligand
-        energy_range: Max energy difference from best pose
-        seed: Random seed for reproducibility
-        scoring_function: Scoring function ("vina", "vinardo", "ad4")
-        target_name: Name of target for result tracking
-
-    Returns:
-        Merged UnidockResult with scores and poses from all GPUs
-    """
-    if n_gpus <= 1:
-        # Fall back to single GPU
-        return run_unidock_batch(
-            ligand_pdbqts=ligand_pdbqts,
-            protein_pdbqt=protein_pdbqt,
-            center=center,
-            size=size,
-            output_dir=output_dir,
-            exhaustiveness=exhaustiveness,
-            n_poses=n_poses,
-            energy_range=energy_range,
-            seed=seed,
-            scoring_function=scoring_function,
-            target_name=target_name,
-        )
-
-    # Build mapping from path to original index
-    path_to_orig_idx = {path: idx for idx, path in enumerate(ligand_pdbqts)}
-
-    # Split ligands across GPUs
-    n_ligands = len(ligand_pdbqts)
-    batch_size = (n_ligands + n_gpus - 1) // n_gpus  # Ceiling division
-
-    gpu_batches = []
-    for gpu_id in range(n_gpus):
-        start_idx = gpu_id * batch_size
-        end_idx = min(start_idx + batch_size, n_ligands)
-        if start_idx < n_ligands:
-            gpu_batches.append((gpu_id, ligand_pdbqts[start_idx:end_idx]))
-
-    logger.info(
-        f"Splitting {n_ligands} ligands across {len(gpu_batches)} GPUs "
-        f"(~{batch_size} per GPU)"
-    )
-
-    # Run GPU batches in parallel using ProcessPoolExecutor
-    merged_result = UnidockResult(target_name=target_name)
-    gpu_results = []
-
-    with ProcessPoolExecutor(max_workers=len(gpu_batches)) as executor:
-        futures = {}
-        for gpu_id, batch_ligands in gpu_batches:
-            future = executor.submit(
-                _run_gpu_batch,
-                gpu_id=gpu_id,
-                ligand_pdbqts=batch_ligands,
-                protein_pdbqt=protein_pdbqt,
-                center=center,
-                size=size,
-                output_dir=output_dir,
-                exhaustiveness=exhaustiveness,
-                n_poses=n_poses,
-                energy_range=energy_range,
-                seed=seed,
-                scoring_function=scoring_function,
-                target_name=target_name,
-            )
-            futures[future] = (gpu_id, batch_ligands)
-
-        for future in as_completed(futures):
-            gpu_id, batch_ligands = futures[future]
-            try:
-                gpu_result = future.result()
-                gpu_results.append((gpu_id, batch_ligands, gpu_result))
-            except Exception as e:
-                logger.error(f"GPU {gpu_id} batch failed: {e}")
-                # Mark all ligands in this batch as failed
-                for ligand_path in batch_ligands:
-                    orig_idx = path_to_orig_idx.get(ligand_path)
-                    if orig_idx is not None:
-                        merged_result.errors[orig_idx] = f"GPU {gpu_id} batch error: {e}"
-
-    # Merge results from all GPUs
-    any_success = False
-    for gpu_id, batch_ligands, gpu_result in gpu_results:
-        if gpu_result.success:
-            any_success = True
-
-        # Map batch-local indices back to original indices
-        for batch_idx, ligand_path in enumerate(batch_ligands):
-            orig_idx = path_to_orig_idx.get(ligand_path)
-            if orig_idx is None:
-                continue
-
-            if batch_idx in gpu_result.scores_by_ligand:
-                merged_result.scores_by_ligand[orig_idx] = gpu_result.scores_by_ligand[batch_idx]
-                merged_result.poses_by_ligand[orig_idx] = gpu_result.poses_by_ligand[batch_idx]
-                merged_result.best_scores[orig_idx] = gpu_result.best_scores[batch_idx]
-            elif batch_idx in gpu_result.errors:
-                merged_result.errors[orig_idx] = gpu_result.errors[batch_idx]
-
-        if gpu_result.error and not gpu_result.success:
-            # Record GPU-level errors
-            for ligand_path in batch_ligands:
-                orig_idx = path_to_orig_idx.get(ligand_path)
-                if orig_idx is not None and orig_idx not in merged_result.errors:
-                    merged_result.errors[orig_idx] = gpu_result.error
-
-    merged_result.success = any_success
-    if not any_success:
-        merged_result.error = "All GPU batches failed"
-
-    logger.info(
-        f"Multi-GPU docking complete: {len(merged_result.best_scores)} succeeded, "
-        f"{len(merged_result.errors)} failed"
-    )
-
-    return merged_result
-
-
 def dock_batch_to_target(
     ligand_pdbqts: list[Path],
     target: TargetConfig,
@@ -641,8 +362,6 @@ def dock_batch_to_target(
 ) -> UnidockResult:
     """
     Dock a batch of ligands to a single target using Uni-Dock.
-
-    Uses multi-GPU parallelism if global_config.n_gpus > 1.
 
     Args:
         ligand_pdbqts: List of ligand PDBQT paths
@@ -671,24 +390,6 @@ def dock_batch_to_target(
         if target.energy_range is not None
         else global_config.energy_range
     )
-
-    # Use multi-GPU if configured
-    n_gpus = getattr(global_config, "n_gpus", 1)
-    if n_gpus > 1:
-        return run_unidock_multi_gpu(
-            ligand_pdbqts=ligand_pdbqts,
-            protein_pdbqt=protein_pdbqt,
-            center=target.center,
-            size=target.size,
-            output_dir=output_dir / target.name,
-            n_gpus=n_gpus,
-            exhaustiveness=exhaustiveness,
-            n_poses=n_poses,
-            energy_range=energy_range,
-            seed=global_config.seed,
-            scoring_function=scoring_function,
-            target_name=target.name,
-        )
 
     return run_unidock_batch(
         ligand_pdbqts=ligand_pdbqts,

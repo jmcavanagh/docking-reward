@@ -1,17 +1,12 @@
-# Test configuration for Uni-Dock multi-GPU docking
-# Usage: docking-reward -i tests/test_smiles.txt -o output -c tests/test_unidock_multi_gpu.yaml
-#
-# This config demonstrates multi-GPU support where ligands are split across
-# multiple GPUs and processed in parallel. Each GPU runs its own Uni-Dock
-# process with CUDA_VISIBLE_DEVICES set to isolate it.
+# Test configuration for Uni-Dock GPU docking
+# Usage: docking-reward -i tests/test_smiles.txt -o output -c tests/test_unidock_config.yaml
 
 docking:
   backend: unidock          # GPU-accelerated docking
   scoring_function: vina    # Standard Vina scoring
   exhaustiveness: 8         # Search exhaustiveness (higher = slower but more thorough)
-  n_poses: 9                # Number of poses per ligand
+  n_poses: 4                # Number of poses per ligand
   energy_range: 3.0         # Max energy difference from best pose (kcal/mol)
-  n_gpus: 4                 # Number of GPUs to use (splits ligands into 4 parallel batches)
 
 druglikeness:
   qed:

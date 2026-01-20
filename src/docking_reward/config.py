@@ -46,9 +46,6 @@ class DockingConfig:
     energy_range: float = 3.0
     # Random seed for reproducibility
     seed: Optional[int] = None
-    # Number of GPUs to use for Uni-Dock (splits ligands into parallel batches)
-    # Only used when backend="unidock". Default 1 = single GPU.
-    n_gpus: int = 1
 
 
 # Alias for backwards compatibility
@@ -140,10 +137,6 @@ def _parse_docking_config(data: dict) -> DockingConfig:
             f"Must be one of: {', '.join(sorted(VALID_SCORING_FUNCTIONS))}"
         )
 
-    n_gpus = data.get("n_gpus", 1)
-    if n_gpus < 1:
-        raise ValueError(f"n_gpus must be at least 1, got {n_gpus}")
-
     return DockingConfig(
         backend=backend,
         scoring_function=scoring_function,
@@ -151,7 +144,6 @@ def _parse_docking_config(data: dict) -> DockingConfig:
         n_poses=data.get("n_poses", 9),
         energy_range=data.get("energy_range", 3.0),
         seed=data.get("seed"),
-        n_gpus=n_gpus,
     )
 
 
