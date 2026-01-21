@@ -127,6 +127,7 @@ def run_unidock_batch(
     target_name: str = "unknown",
     prefilter: bool = True,
     retry_on_failure: bool = True,
+    verbosity: int = 1,
 ) -> UnidockResult:
     """
     Run Uni-Dock on a batch of ligands against a single target.
@@ -148,6 +149,7 @@ def run_unidock_batch(
         target_name: Name of target for result tracking
         prefilter: Pre-filter ligands for compatibility (default True)
         retry_on_failure: Retry with bad ligands removed on failure (default True)
+        verbosity: Uni-Dock verbosity level (0=silent, 1=normal, 2=verbose)
 
     Returns:
         UnidockResult with scores and poses for all ligands
@@ -220,7 +222,7 @@ def run_unidock_batch(
                 "--energy_range", str(energy_range),
                 "--scoring", scoring_function,
                 "--dir", str(output_dir),
-                "--verbosity", "2",
+                "--verbosity", str(verbosity),
             ]
 
             if seed is not None:
@@ -404,4 +406,5 @@ def dock_batch_to_target(
         seed=global_config.seed,
         scoring_function=scoring_function,
         target_name=target.name,
+        verbosity=global_config.verbosity,
     )

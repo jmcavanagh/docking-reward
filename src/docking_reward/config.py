@@ -46,6 +46,8 @@ class DockingConfig:
     energy_range: float = 3.0
     # Random seed for reproducibility
     seed: Optional[int] = None
+    # Uni-Dock verbosity level (0=silent, 1=normal, 2=verbose)
+    verbosity: int = 1
 
 
 # Alias for backwards compatibility
@@ -144,6 +146,7 @@ def _parse_docking_config(data: dict) -> DockingConfig:
         n_poses=data.get("n_poses", 9),
         energy_range=data.get("energy_range", 3.0),
         seed=data.get("seed"),
+        verbosity=data.get("verbosity", 1),
     )
 
 
